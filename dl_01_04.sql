@@ -311,3 +311,155 @@ BEGIN
 
     PRINT N'Đăng nhập thành công';
 END
+--1--Trigger kiểm tra ghế đã được đặt hoặc bán hay chưa
+CREATE TRIGGER TG_CheckGheTruocKhiDat
+ON DAT_CHO
+INSTEAD OF INSERT
+AS
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM INSERTED i
+        JOIN VE v 
+        ON i.MA_CB = v.MA_CB AND i.MA_GHE = v.MA_GHE
+    )
+    BEGIN
+        PRINT N'Ghế này đã được bán!';
+        ROLLBACK;
+        RETURN;
+    END
+
+    INSERT INTO DAT_CHO
+    SELECT * FROM INSERTED;
+END
+
+INSERT INTO DAT_CHO(MA_DAT_CHO, MA_KH, MA_CB, MA_GHE)
+VALUES('DC01', 'KH01', 'CB01', 'G01'); --Thông báo: Ghế này đã được bán
+
+INSERT INTO VE(MA_VE, MA_KH, MA_CB, MA_GHE)
+VALUES('V001', 'KH01', 'CB01', 'G01');--Đặt vé mới và Trigger ghi lại
+GO
+--Lịch sử hoạt động
+--2--Trigger tự động ghi log khi thêm vé
+CREATE TRIGGER TRG_LogThemVe
+ON VE
+AFTER INSERT
+AS
+BEGIN
+    INSERT INTO AUDIT_LOG(HANH_DONG, MO_TA)
+    SELECT 
+        N'THÊM VÉ',
+        N'Thêm vé: ' + MA_VE
+    FROM INSERTED;
+END
+GO
+
+--3--Trigger Cập nhật tổng tiền hóa đơn khi thêm vé
+CREATE TRIGGER TG_UpdateTongTien
+ON VE
+AFTER INSERT
+AS
+BEGIN
+    UPDATE HOA_DON
+    SET TONG_TIEN = (
+        SELECT SUM(bg.GIA_TIEN)
+        FROM VE v
+        JOIN CHUYEN_BAY cb ON v.MA_CB = cb.MA_CB
+        JOIN GHE g ON v.MA_GHE = g.MA_GHE
+        JOIN BANG_GIA bg 
+            ON bg.MA_CB = v.MA_CB 
+            AND bg.MA_HANG_GHE = g.MA_HANG_GHE
+        WHERE v.MA_HOA_DON = HOA_DON.MA_HOA_DON
+    )
+    WHERE MA_HOA_DON IN (SELECT MA_HOA_DON FROM INSERTED);
+END
+GO
+--4--Trigger kiểm tra khuyến mãi còn hạn hay không
+CREATE TRIGGER TRG_KiemTraKhuyenMai
+ON HOA_DON
+AFTER INSERT
+AS
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM INSERTED i
+        JOIN KHUYEN_MAI km ON i.MA_KM = km.MA_KM
+        WHERE GETDATE() NOT BETWEEN km.NGAY_BD AND km.NGAY_KT
+    )
+    BEGIN
+        PRINT N'Khuyến mãi không còn hiệu lực!';
+        ROLLBACK;
+    END
+END
+GO
+--Thủ tục đặt vé
+CREATE PROC P_DatVe
+    @MA_VE VARCHAR(10),
+    @MA_KH VARCHAR(10),
+    @MA_CB VARCHAR(10),
+    @MA_GHE VARCHAR(10),
+    @MA_HOA_DON VARCHAR(10)
+AS
+BEGIN
+    -- kiểm tra ghế
+    IF EXISTS (
+        SELECT 1 FROM VE 
+        WHERE MA_CB = @MA_CB AND MA_GHE = @MA_GHE
+    )
+    BEGIN
+        PRINT N'Ghế đã được đặt!';
+        RETURN;
+    END
+
+    INSERT INTO VE
+    VALUES(@MA_VE, @MA_KH, @MA_CB, @MA_GHE, @MA_HOA_DON, GETDATE());
+
+    PRINT N'Đặt vé thành công';
+END
+GO
+--Thủ tục thanh toán
+CREATE PROC P_ThanhToan
+    @MA_TT VARCHAR(10),
+    @MA_HOA_DON VARCHAR(10),
+    @SO_TIEN DECIMAL(15,2)
+AS
+BEGIN
+    DECLARE @TONG DECIMAL(15,2);
+
+    SELECT @TONG = TONG_TIEN 
+    FROM HOA_DON 
+    WHERE MA_HOA_DON = @MA_HOA_DON;
+
+    IF @SO_TIEN < @TONG
+    BEGIN
+        PRINT N'Chưa thanh toán đủ tiền!';
+        RETURN;
+    END
+
+    INSERT INTO THANH_TOAN
+    VALUES(@MA_TT, @MA_HOA_DON, N'Tiền mặt', GETDATE(), @SO_TIEN);
+
+    PRINT N'Thanh toán thành công';
+END
+GO
+--Thủ tục tìm chuyến bay
+CREATE PROC P_TimChuyenBay
+    @SB_DI VARCHAR(10),
+    @SB_DEN VARCHAR(10)
+AS
+BEGIN
+    SELECT *
+    FROM CHUYEN_BAY
+    WHERE SB_DI = @SB_DI AND SB_DEN = @SB_DEN;
+END
+GO
+--Thủ tục hủy vé
+CREATE PROC P_HuyVe
+    @MA_VE VARCHAR(10)
+AS
+BEGIN
+    DELETE FROM VE WHERE MA_VE = @MA_VE;
+
+    PRINT N'Đã hủy vé';
+END
+GO
